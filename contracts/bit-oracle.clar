@@ -150,3 +150,83 @@
     (ok true)
   )
 )
+
+;; Resolve Market with Final Price
+;; Oracle function to set final Bitcoin price and resolve market
+(define-public (resolve-market
+    (market-id uint)
+    (end-price uint)
+  )
+  (let ((market (unwrap! (map-get? markets market-id) ERR-NOT-FOUND)))
+    (asserts! (is-eq tx-sender (var-get oracle-address)) ERR-OWNER-ONLY)
+    (asserts! (>= stacks-block-height (get end-block market)) ERR-MARKET-CLOSED)
+    (asserts! (not (get resolved market)) ERR-MARKET-CLOSED)
+    (asserts! (> end-price u0) ERR-INVALID-PARAMETER)
+    (map-set markets market-id
+      (merge market {
+        end-price: end-price,
+        resolved: true,
+      })
+    )
+    (ok true)
+  )
+)
+
+;; Claim Prediction Winnings
+;; Allows winning participants to claim their proportional payouts
+(define-public (claim-winnings (market-id uint))
+  (let (
+      (market (unwrap! (map-get? markets market-id) ERR-NOT-FOUND))
+      (prediction (unwrap!
+        (map-get? user-predictions {
+          market-id: market-id,
+          user: tx-sender,
+        })
+        ERR-NOT-FOUND
+      ))
+    )
+    (asserts! (get resolved market) ERR-MARKET-CLOSED)
+    (asserts! (not (get claimed prediction)) ERR-ALREADY-CLAIMED)
+    (let (
+        (winning-prediction (if (> (get end-price market) (get start-price market))
+          "up"
+          "down"
+        ))
+        (total-stake (+ (get total-up-stake market) (get total-down-stake market)))
+        (winning-stake (if (is-eq winning-prediction "up")
+          (get total-up-stake market)
+          (get total-down-stake market)
+        ))
+      )
+      (asserts! (is-eq (get prediction prediction) winning-prediction)
+        ERR-INVALID-PREDICTION
+      )
+      (let (
+          (winnings (/ (* (get stake prediction) total-stake) winning-stake))
+          (fee (/ (* winnings (var-get fee-percentage)) u100))
+          (payout (- winnings fee))
+        )
+        ;; Transfer winnings to user
+        (try! (as-contract (stx-transfer? payout (as-contract tx-sender) tx-sender)))
+        ;; Transfer fee to contract owner
+        (try! (as-contract (stx-transfer? fee (as-contract tx-sender) CONTRACT-OWNER)))
+        ;; Mark prediction as claimed
+        (map-set user-predictions {
+          market-id: market-id,
+          user: tx-sender,
+        }
+          (merge prediction { claimed: true })
+        )
+        (ok payout)
+      )
+    )
+  )
+)
+
+;; READ-ONLY FUNCTIONS
+
+;; Get Market Information
+;; Retrieves complete market data structure
+(define-read-only (get-market (market-id uint))
+  (map-get? markets market-id)
+)
